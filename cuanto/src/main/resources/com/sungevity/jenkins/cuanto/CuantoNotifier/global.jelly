@@ -1,0 +1,17 @@
+<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson"
+    xmlns:f="/lib/form" xmlns:i="jelly:fmt" xmlns:p="/lib/hudson/project">
+  <f:section title="Cuanto Notification">
+
+	<f:entry title="Cuanto URL" field="cuantoServerUrl" description="Add Cuanto URL">
+      <f:textbox default="${descriptor.getCuantoServerUrl()}"/>
+    </f:entry>
+
+	<f:entry title="Email to Notifiy If Publish Fails" field="emailToNotifyUponPublishFailures" description="Email to notify upon publish failure.  Empty means no notifications.">
+      <f:textbox default="${descriptor.getEmailToNotifyUponPublishFailures()}"/>
+    </f:entry>
+
+	<f:entry title="Publish failures will fail the build?" field="publishFailuresFailTheBuild" description="Should publish failures fail the build?">
+      <f:checkbox default="false"/>
+    </f:entry>
+  </f:section>
+</j:jelly>
