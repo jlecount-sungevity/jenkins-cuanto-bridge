@@ -1,9 +1,6 @@
 package com.sungevity.jenkins.cuanto;
 
-import cuanto.api.CuantoConnector;
-import cuanto.api.TestOutcome;
-import cuanto.api.TestResult;
-import cuanto.api.TestRun;
+import cuanto.api.*;
 import hudson.Extension;
 import hudson.Launcher;
 import hudson.model.AbstractBuild;
@@ -14,12 +11,13 @@ import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Notifier;
 import hudson.tasks.Publisher;
 import hudson.tasks.junit.JUnitParser;
+import hudson.util.ListBoxModel;
 import net.sf.json.JSONObject;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.StaplerRequest;
 
 import java.io.PrintStream;
-import java.util.Collection;
+import java.util.*;
 
 /**
  * Push test results to Cuanto
@@ -29,19 +27,49 @@ import java.util.Collection;
 
 public class CuantoNotifier extends Notifier {
 
-    private String testProjectName;
-    private String resultsPattern;
+    private final String testType;
+    private final String resultsPattern;
+    private final String testProjectName;
 
     @DataBoundConstructor
-    public CuantoNotifier(String testProjectName, String resultsPattern) {
-        this.testProjectName = testProjectName;
+    public CuantoNotifier(String testType, String resultsPattern, String testProjectName) {
+        this.testType = testType;
         this.resultsPattern = resultsPattern;
+        this.testProjectName = testProjectName;
+    }
+
+
+    public String getTestType() {
+        return testType;
+    }
+
+    public String getResultsPattern() {
+        return resultsPattern;
+    }
+
+    public String getTestProjectName() {
+        return testProjectName;
     }
 
     private TestRun createNewTestRun(AbstractBuild<?, ?> build, hudson.tasks.junit.TestResult junitTestResult) {
         TestRun testRun = new TestRun(build.getTime());
+
+        testRun.addLink(build.getUrl(), "jenkins build url");
+
         testRun.addTestProperty("stderr", junitTestResult.getStderr());
         testRun.addTestProperty("stdout", junitTestResult.getStdout());
+
+        /*
+            TODO:
+            add all of these or filter out some?
+            How do we tell the difference between ones we want and those we don't?
+            Make sure this has REPO, GIT_COMMIT and branch!  Otherwise, find and grab those too.
+         */
+        Map<String, String> variables = build.getBuildVariables();
+        for (String key: variables.keySet()) {
+            testRun.addTestProperty(key, variables.get(key));
+        }
+
         return testRun;
     }
 
@@ -127,6 +155,7 @@ public class CuantoNotifier extends Notifier {
         return BuildStepMonitor.NONE;
     }
 
+
     @Extension
     public static class DescriptorImpl extends BuildStepDescriptor<Publisher> {
 
@@ -134,21 +163,54 @@ public class CuantoNotifier extends Notifier {
         private boolean publishFailuresFailTheBuild = false;
         private String emailToNotifyUponPublishFailures;
 
-        public String getCuantoServerUrl() {                    return cuantoServerUrl;}
-        public boolean getPublishFailuresFailTheBuild() {       return publishFailuresFailTheBuild;}
-        public String getEmailToNotifyUponPublishFailures() {   return emailToNotifyUponPublishFailures; }
+
+        private ListBoxModel createSelection(List<String> choices) {
+            ListBoxModel m = new ListBoxModel();
+            for (String s : choices) {
+                m.add(s);
+            }
+            return m;
+        }
+
+        public String getCuantoServerUrl()                      {   return cuantoServerUrl;                     }
+        public boolean getPublishFailuresFailTheBuild()         {   return publishFailuresFailTheBuild;         }
+        public String getEmailToNotifyUponPublishFailures()     {   return emailToNotifyUponPublishFailures;    }
 
         public boolean isApplicable(Class<? extends AbstractProject> aClass) {
             return true;
         }
 
+
         public String getDisplayName() {
             return "Push test results to Cuanto";
         }
 
+        private List<String> getCuantoProjects(CuantoConnector cuanto) {
+            List<String> projects = new ArrayList<String>();
+            for ( Project project: cuanto.getAllProjects()) {
+                projects.add(project.getName());
+            }
+            return projects;
+        }
+
+        public ListBoxModel doFillTestProjectNameItems() {
+            /*
+                //TODO: Grab this from cuanto directly, using impl below, once cuanto is populated with real projects...
+                CuantoConnector cuanto = CuantoConnector.newInstance(cuantoServerUrl, testProjectName);
+                List<String> projectList = getCuantoProjects(cuanto);
+             */
+
+            List<String> projectList = Arrays.asList("Arinna-API", "Icarus", "ForAll", "PricingEngine");
+            return createSelection(projectList);
+        }
+
+        public ListBoxModel doFillTestTypeItems() {
+            List<String> testTypes = Arrays.asList("Integration", "Unit", "Functional");
+            return createSelection(testTypes);
+        }
+
         @Override
         public boolean configure(StaplerRequest req, JSONObject json) throws FormException {
-
             this.cuantoServerUrl = json.getString("cuantoServerUrl");
             this.publishFailuresFailTheBuild = json.getBoolean("publishFailuresFailTheBuild");
             this.emailToNotifyUponPublishFailures = json.getString("emailToNotifyUponPublishFailures");

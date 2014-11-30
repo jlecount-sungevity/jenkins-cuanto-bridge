@@ -1,8 +1,13 @@
 <j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson"
     xmlns:f="/lib/form" xmlns:i="jelly:fmt" xmlns:p="/lib/hudson/project">
 	<f:entry title="Cuanto Project Name" field="testProjectName" description="Project Name in Cuanto">
-        <f:textbox/>
+        <f:select value="${it.getTestProjectName()}"/>
     </f:entry>
+
+	<f:entry title="Test Type" field="testType" description="Classification of this type of test">
+        <f:select value="${it.getTestType()}"/>
+    </f:entry>
+
 	<f:entry title="Results Files to Include" field="resultsPattern" description="Results file pattern string">
         <f:textbox/>
     </f:entry>
