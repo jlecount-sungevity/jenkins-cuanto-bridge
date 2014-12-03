@@ -10,7 +10,9 @@ import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Notifier;
 import hudson.tasks.Publisher;
+import hudson.tasks.junit.CaseResult;
 import hudson.tasks.junit.JUnitParser;
+import hudson.tasks.junit.SuiteResult;
 import hudson.util.ListBoxModel;
 import net.sf.json.JSONObject;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -24,7 +26,6 @@ import java.util.*;
  *
  * @author <a href="mailto:jlecount@sungevity.com">Jason LeCount</a>
  */
-
 public class CuantoNotifier extends Notifier {
 
     private final String testType;
@@ -51,13 +52,10 @@ public class CuantoNotifier extends Notifier {
         return testProjectName;
     }
 
-    private TestRun createNewTestRun(AbstractBuild<?, ?> build, hudson.tasks.junit.TestResult junitTestResult) {
-        TestRun testRun = new TestRun(build.getTime());
+    private TestRun createNewTestRun(AbstractBuild<?, ?> build, String projectKey, hudson.tasks.junit.TestResult junitTestResult) {
+        TestRun testRun = new TestRun(projectKey);
 
-        testRun.addLink(build.getUrl(), "jenkins build url");
-
-        testRun.addTestProperty("stderr", junitTestResult.getStderr());
-        testRun.addTestProperty("stdout", junitTestResult.getStdout());
+        testRun.addLink("jenkins build", build.getAbsoluteUrl());
 
         /*
             TODO:
@@ -82,18 +80,44 @@ public class CuantoNotifier extends Notifier {
         return p.parse(resultsPattern, build, launcher, listener);
     }
 
+    private void addOutcomesForResult(TestRun theTestRun,
+                                       CuantoConnector cuanto,
+                                       PrintStream logger,
+                                       hudson.tasks.test.TestResult testResult,
+                                       TestResult status) {
+        TestOutcome outcome = TestOutcome.newInstance(testResult.getDisplayName(), testResult.getId(), status);
+        //FIXME: add stderr somewhere....
+        outcome.setTestOutput(testResult.getStdout());
+        outcome.setDuration((long) testResult.getDuration());
+        logger.println("Adding outcome: " + outcome + " of type " + status);
+        cuanto.addTestOutcome(outcome, theTestRun);
+
+    }
     private void addOutcomesForResults(TestRun theTestRun,
                                        CuantoConnector cuanto,
                                        PrintStream logger,
-                                       Collection<? extends hudson.tasks.test.TestResult> results,
-                                       TestResult ofResultType) {
-
-        for (hudson.tasks.test.TestResult tr: results) {
-            TestOutcome outcome = TestOutcome.newInstance(tr.getDisplayName(), tr.getId(), ofResultType);
-            outcome.setDuration((long) tr.getDuration());
-            logger.println("Adding outcome: " + outcome + " of type " + ofResultType);
-            cuanto.addTestOutcome(outcome, theTestRun);
+                                       CaseResult cr) {
+        for (hudson.tasks.test.TestResult tr: cr.getPassedTests()) {
+            addOutcomesForResult(theTestRun, cuanto, logger, tr, TestResult.Pass);
         }
+
+        for (hudson.tasks.test.TestResult tr: cr.getSkippedTests()) {
+            addOutcomesForResult(theTestRun, cuanto, logger, tr, TestResult.Skip);
+        }
+
+        for (hudson.tasks.test.TestResult tr: cr.getFailedTests()) {
+            addOutcomesForResult(theTestRun, cuanto, logger, tr, TestResult.Fail);
+        }
+    }
+
+    private String getProjectKey(CuantoConnector cuanto) {
+        String key = null;
+        for ( Project p: cuanto.getAllProjects()) {
+            if ( p.getName().equalsIgnoreCase(testProjectName)) {
+                key = p.getProjectKey();
+            }
+        }
+        return key;
     }
 
     private TestRun constructTestRun(CuantoConnector cuanto,
@@ -103,12 +127,16 @@ public class CuantoNotifier extends Notifier {
 
         hudson.tasks.junit.TestResult junitTestResult = parseJUnitResults(build, launcher, listener);
 
-        TestRun theTestRun = createNewTestRun(build, junitTestResult);
+        String projectKey = getProjectKey(cuanto);
+        TestRun theTestRun = createNewTestRun(build, projectKey, junitTestResult);
+        theTestRun.setDateExecuted(new Date());
         cuanto.addTestRun(theTestRun);
 
-        addOutcomesForResults(theTestRun, cuanto, listener.getLogger(), junitTestResult.getPassedTests(), TestResult.Pass);
-        addOutcomesForResults(theTestRun, cuanto, listener.getLogger(), junitTestResult.getFailedTests(), TestResult.Fail);
-        addOutcomesForResults(theTestRun, cuanto, listener.getLogger(), junitTestResult.getSkippedTests(), TestResult.Skip);
+        for (SuiteResult sr: junitTestResult.getSuites()) {
+            for (CaseResult cr: sr.getCases()) {
+                addOutcomesForResults(theTestRun, cuanto, listener.getLogger(), cr);
+            }
+        }
 
         return theTestRun;
     }
@@ -116,7 +144,12 @@ public class CuantoNotifier extends Notifier {
     @Override
     public boolean perform(final AbstractBuild<?, ?> build, final Launcher launcher, final BuildListener listener) {
 
-        CuantoConnector cuanto = CuantoConnector.newInstance(getDescriptor().getCuantoServerUrl(), testProjectName);
+        // OK, this is nuts, but I can't get the project key without cuanto and I can't post to the cuanto instance
+        // that is constructed without the key!!
+        CuantoConnector cuanto = CuantoConnector.newInstance(getDescriptor().getCuantoServerUrl());
+        String projectKey = getProjectKey(cuanto);
+        cuanto = CuantoConnector.newInstance(getDescriptor().getCuantoServerUrl(), projectKey);
+
         try {
             TestRun theRun = constructTestRun(cuanto, build, launcher, listener);
             return true;
@@ -194,13 +227,15 @@ public class CuantoNotifier extends Notifier {
         }
 
         public ListBoxModel doFillTestProjectNameItems() {
-            /*
-                //TODO: Grab this from cuanto directly, using impl below, once cuanto is populated with real projects...
-                CuantoConnector cuanto = CuantoConnector.newInstance(cuantoServerUrl, testProjectName);
-                List<String> projectList = getCuantoProjects(cuanto);
-             */
+            //TODO: Grab this from cuanto directly, using impl below, once cuanto is populated with real projects...
+            List<String> projectList = new ArrayList<String>();
+            try {
+                CuantoConnector cuanto = CuantoConnector.newInstance(cuantoServerUrl);
+                projectList = getCuantoProjects(cuanto);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
 
-            List<String> projectList = Arrays.asList("Arinna-API", "Icarus", "ForAll", "PricingEngine");
             return createSelection(projectList);
         }
 
