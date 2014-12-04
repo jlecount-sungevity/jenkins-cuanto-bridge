@@ -1,11 +1,11 @@
 package com.sungevity.jenkins.cuanto;
 
 import cuanto.api.*;
+import cuanto.api.Project;
 import hudson.Extension;
 import hudson.Launcher;
-import hudson.model.AbstractBuild;
-import hudson.model.AbstractProject;
-import hudson.model.BuildListener;
+import hudson.model.*;
+import hudson.scm.ChangeLogSet;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Notifier;
@@ -28,9 +28,16 @@ import java.util.*;
  */
 public class CuantoNotifier extends Notifier {
 
+    static String[] DESIRED_JENKINS_VARS = new String[] {
+            "GIT_COMMIT", "GIT_REPO", "GIT_BRANCH",
+            "JOB_NAME", "USER", "BUILD_CAUSE_MANUALTRIGGER"
+    };
+
     private final String testType;
     private final String resultsPattern;
     private final String testProjectName;
+
+    private final String newline = System.getProperty("line.separator");
 
     @DataBoundConstructor
     public CuantoNotifier(String testType, String resultsPattern, String testProjectName) {
@@ -52,24 +59,6 @@ public class CuantoNotifier extends Notifier {
         return testProjectName;
     }
 
-    private TestRun createNewTestRun(AbstractBuild<?, ?> build, String projectKey, hudson.tasks.junit.TestResult junitTestResult) {
-        TestRun testRun = new TestRun(projectKey);
-
-        testRun.addLink("jenkins build", build.getAbsoluteUrl());
-
-        /*
-            TODO:
-            add all of these or filter out some?
-            How do we tell the difference between ones we want and those we don't?
-            Make sure this has REPO, GIT_COMMIT and branch!  Otherwise, find and grab those too.
-         */
-        Map<String, String> variables = build.getBuildVariables();
-        for (String key: variables.keySet()) {
-            testRun.addTestProperty(key, variables.get(key));
-        }
-
-        return testRun;
-    }
 
     private hudson.tasks.junit.TestResult parseJUnitResults(
             AbstractBuild<?,?> build,
@@ -80,33 +69,81 @@ public class CuantoNotifier extends Notifier {
         return p.parse(resultsPattern, build, launcher, listener);
     }
 
-    private void addOutcomesForResult(TestRun theTestRun,
-                                       CuantoConnector cuanto,
-                                       PrintStream logger,
-                                       hudson.tasks.test.TestResult testResult,
-                                       TestResult status) {
-        TestOutcome outcome = TestOutcome.newInstance(testResult.getDisplayName(), testResult.getId(), status);
-        //FIXME: add stderr somewhere....
-        outcome.setTestOutput(testResult.getStdout());
-        outcome.setDuration((long) testResult.getDuration());
-        logger.println("Adding outcome: " + outcome + " of type " + status);
-        cuanto.addTestOutcome(outcome, theTestRun);
+    private String getStdoutAndStderrFromTestResult(hudson.tasks.test.TestResult testResult) {
+        StringBuffer sb = new StringBuffer();
 
+        if ( testResult.getStdout() != null && ! testResult.getStdout().isEmpty()) {
+            sb.append(testResult.getStdout());
+        }
+
+        if ( testResult.getStderr() != null && ! testResult.getStderr().isEmpty()) {
+            sb.append(newline + newline);
+            sb.append(testResult.getStderr());
+            sb.append(newline + newline);
+        }
+
+        if ( testResult.getErrorDetails() != null && ! testResult.getErrorDetails().isEmpty()) {
+            sb.append(newline);
+            sb.append(testResult.getErrorDetails() + newline + newline);
+        }
+        if ( testResult.getErrorStackTrace() != null && ! testResult.getErrorStackTrace().isEmpty()) {
+            sb.append(newline);
+            sb.append(testResult.getErrorStackTrace() + newline + newline);
+        }
+        return sb.toString().trim();
     }
+
+    private void addOutcomesForResult(TestRun theTestRun,
+                                      AbstractBuild<?, ?> build,
+                                      CuantoConnector cuanto,
+                                      PrintStream logger,
+                                      hudson.tasks.test.TestResult testResult,
+                                      TestResult status) {
+        TestOutcome outcome = TestOutcome.newInstance(testResult.getDisplayName(), testResult.getId(), status);
+        if ( testResult.getOwner() != null) {
+            outcome.setOwner(testResult.getOwner().toString());
+        }
+        String testOutput = getStdoutAndStderrFromTestResult(testResult);
+        if ( testOutput != null && testOutput.length() > 0 ) {
+            outcome.setTestOutput(testOutput);
+        }
+
+        addEnvVarsToOutcome(outcome, build.getEnvVars());
+        outcome.setDuration((long) testResult.getDuration());
+        try {
+            cuanto.addTestOutcome(outcome, theTestRun);
+        } catch (Exception e) {
+            logger.println("Failed to add test outcome to cuanto: " + e.getMessage());
+        }
+    }
+
+    private void addEnvVarsToOutcome(TestOutcome outcome, Map<String, String> envVars) {
+        outcome.addLink(envVars.get("BUILD_URL"), envVars.get("BUILD_URL"));
+        for (int i = 0; i < DESIRED_JENKINS_VARS.length; i++) {
+            String desiredVar = DESIRED_JENKINS_VARS[i];
+            String value = envVars.get(desiredVar);
+            if ( value == null ) {
+                value = "";
+            }
+            outcome.addTestProperty(desiredVar, value);
+        }
+    }
+
     private void addOutcomesForResults(TestRun theTestRun,
+                                       AbstractBuild<?, ?> build,
                                        CuantoConnector cuanto,
                                        PrintStream logger,
                                        CaseResult cr) {
         for (hudson.tasks.test.TestResult tr: cr.getPassedTests()) {
-            addOutcomesForResult(theTestRun, cuanto, logger, tr, TestResult.Pass);
+            addOutcomesForResult(theTestRun, build, cuanto, logger, tr, TestResult.Pass);
         }
 
         for (hudson.tasks.test.TestResult tr: cr.getSkippedTests()) {
-            addOutcomesForResult(theTestRun, cuanto, logger, tr, TestResult.Skip);
+            addOutcomesForResult(theTestRun, build, cuanto, logger, tr, TestResult.Skip);
         }
 
         for (hudson.tasks.test.TestResult tr: cr.getFailedTests()) {
-            addOutcomesForResult(theTestRun, cuanto, logger, tr, TestResult.Fail);
+            addOutcomesForResult(theTestRun, build, cuanto, logger, tr, TestResult.Fail);
         }
     }
 
@@ -128,17 +165,60 @@ public class CuantoNotifier extends Notifier {
         hudson.tasks.junit.TestResult junitTestResult = parseJUnitResults(build, launcher, listener);
 
         String projectKey = getProjectKey(cuanto);
-        TestRun theTestRun = createNewTestRun(build, projectKey, junitTestResult);
+        TestRun theTestRun = new TestRun(new Date());
         theTestRun.setDateExecuted(new Date());
         cuanto.addTestRun(theTestRun);
 
+        addRecentChangesets(theTestRun, build);
+
+
+        theTestRun.addLink("jenkins build", build.getAbsoluteUrl());
+
+        List<ParametersAction> actions = build.getActions(ParametersAction.class);
+        for (Action action: actions) {
+            String name = action.getDisplayName();
+            String value = build.getBuildVariableResolver().resolve(name);
+            if ( name != null && value != null) {
+                listener.getLogger().println("Adding PA: " + name + ": " + value + " to testRun");
+                theTestRun.addTestProperty(name, value);
+            }
+        }
+
+        List<EnvironmentContributingAction> ecaActions = build.getActions(EnvironmentContributingAction.class);
+        for (Action action: ecaActions) {
+            String name = action.getDisplayName();
+            String value = build.getBuildVariableResolver().resolve(name);
+            if ( name != null && value != null ) {
+                theTestRun.addTestProperty(name, value);
+                listener.getLogger().println("Adding ECA: " + name + ": " + value + " to testRun");
+            }
+        }
+
+
         for (SuiteResult sr: junitTestResult.getSuites()) {
             for (CaseResult cr: sr.getCases()) {
-                addOutcomesForResults(theTestRun, cuanto, listener.getLogger(), cr);
+                addOutcomesForResults(theTestRun, build, cuanto, listener.getLogger(), cr);
             }
         }
 
         return theTestRun;
+    }
+
+    private void addRecentChangesets(TestRun theTestRun, AbstractBuild<?, ?> build) {
+        ChangeLogSet<? extends ChangeLogSet.Entry> changeSet = build.getChangeSet();
+        int items = changeSet.getItems().length;
+        int current = 0;
+        StringBuffer sb = new StringBuffer();
+        for (ChangeLogSet.Entry entry : changeSet) {
+            sb.append(entry.getCommitId());
+            if ( current < items - 1) {
+                sb.append(", ");
+            }
+            current++;
+            System.out.println("Debug -- commit: " + entry.getCommitId());
+        }
+
+        theTestRun.addTestProperty("recent_changesets", sb.toString());
     }
 
     @Override
